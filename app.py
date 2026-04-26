@@ -51,22 +51,28 @@ if st.button("EXECUTE SYNTHESIS"):
             except:
                 st.warning(f"Connection issue verifying {author}")
 
-        # --- PHASE 2: NEURAL SYNTHESIS ---
+        # --- PHASE 2: NEURAL SYNTHESIS (Updated for Conversational Task) ---
         st.divider()
         st.subheader("🧠 Q1 Neural Rewrite")
         
-        with st.spinner("Synthesizing through Hugging Face Inference Layers..."):
-            # Llama-3 Prompt Format
-            prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are a Q1 Academic Editor. Objective: {obj}. Audit Report: {audit_report}. Rewrite the text for high-impact flow.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{text_input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
-            
+        with st.spinner("Synthesizing through Hugging Face Chat Layers..."):
             try:
-                response = client.text_generation(
-                    prompt,
-                    max_new_tokens=1000,
+                # Switching to the Chat Completion method to satisfy the provider
+                response = client.chat.completions.create(
+                    model=model_id,
+                    messages=[
+                        {"role": "system", "content": f"You are a Q1 Academic Editor. Objective: {obj}. Audit Report: {audit_report}"},
+                        {"role": "user", "content": f"Rewrite this text for high-impact flow and interconnectedness. Fix citations: {text_input}"}
+                    ],
+                    max_tokens=1000,
                     temperature=0.2
                 )
+                
+                # Extract the message content correctly
+                q1_output = response.choices[0].message.content
+                
                 st.success("Synthesis Complete")
-                st.write(response)
-                st.download_button("Download Q1 Manuscript", response, "Q1_Revised.txt")
+                st.write(q1_output)
+                st.download_button("Download Q1 Manuscript", q1_output, "Q1_Revised.txt")
             except Exception as e:
-                st.error(f"Brain Error: {e}. Try clicking again in 10 seconds.")
+                st.error(f"Neural Engine Error: {e}. Try changing the Model ID in the sidebar to 'meta-llama/Llama-3.2-3B-Instruct' if this persists.")
