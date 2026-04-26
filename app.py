@@ -1,4 +1,9 @@
-# --- 🤖 START THE ENGINE ---
+import streamlit as st
+import requests
+import re
+from huggingface_hub import InferenceClient
+
+# --- The rest of your code follows below ---
 st.title("🤖 CitaGuard: HF-Native Research Engine")
 
 # 1. CREATE THE MISSING VARIABLE
