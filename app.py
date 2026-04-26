@@ -1,115 +1,93 @@
 import streamlit as st
 import requests
 import re
-import os
 from huggingface_hub import InferenceClient
 
-st.set_page_config(page_title="CitaGuard Q1-Engine", layout="wide")
+# --- SETUP ---
+client = InferenceClient(api_key=hf_token) # Ensure your token is valid
+model_id = "deepseek-ai/DeepSeek-V4-Pro"
 
-# UI Styling
-st.markdown("""<style>.proof-box {background-color: #f0f2f6; border-left: 5px solid #2ecc71; padding: 15px; margin-bottom: 10px;}</style>""", unsafe_allow_html=True)
+# --- PHASE 1: OPENALEX GROUNDING ---
+st.subheader("📑 OpenAlex Evidence Cards (2026)")
+sentences = re.split(r'(?<=[.!?]) +', text_input)
+audit_data = []
 
-st.title("🤖 CitaGuard: HF-Native Research Engine")
-
-with st.sidebar:
-    st.header("⚙️ Machine Settings")
-    # MANUAL TOKEN BYPASS
-    user_token = st.text_input("HF Token (Paste here if secret fails)", type="password")
+for sent in sentences:
+    if len(sent.strip()) < 10: continue
     
-    # Logic to choose the token
-    hf_token = user_token if user_token else os.environ.get("HF_TOKEN")
+    # Use search.semantic for better conceptual matching
+    # Email is required by OpenAlex for the 'polite' pool (faster results)
+    oa_url = f"https://api.openalex.org/works?search.semantic={sent}&filter=from_publication_date:2022-01-01&mailto=your-email@example.com"
     
-    obj = st.sidebar.text_area("Research Objective", "Analyze psychometric validity.")
-    model_id = st.text_input("Model ID", "meta-llama/Meta-Llama-3-8B-Instruct")
-
-text_input = st.text_area("Paste Literature Review Segment", height=250)
-
-if st.button("EXECUTE SYNTHESIS"):
-    if not hf_token:
-        st.error("🔑 Token Required: Paste your HF Write Token in the sidebar to begin.")
-    else:
-        # Initialize Client with the found token
-        client = InferenceClient(model_id, token=hf_token)
+    try:
+        res = requests.get(oa_url).json()
+        results = res.get('results', [])
         
-        # --- PHASE 1: OPENALEX PRECISION DISCOVERY ---
-        import datetime
-        current_year = datetime.datetime.now().year
-        cutoff_year = current_year - 4
-        
-        sentences = re.split(r'(?<=[.!?]) +', text_input)
-        audit_data = [] 
+        if results:
+            paper = results[0]
+            # Reconstruct the Abstract (The "NotebookLM" part)
+            index = paper.get('abstract_inverted_index', {})
+            if index:
+                # Rebuild text from the word-position map
+                words = sorted([(pos, word) for word, positions in index.items() for pos in positions])
+                evidence = " ".join([w[1] for w in words])[:600] + "..."
+            else:
+                evidence = "No abstract available. Context: " + paper.get('display_name', 'Research Paper')
 
-        st.subheader(f"📑 OpenAlex Evidence Cards ({current_year})")
+            auth = paper['authorships'][0]['author']['display_name'] if paper['authorships'] else "Scholar"
+            year = paper['publication_year']
+            
+            audit_data.append({
+                "original": sent,
+                "new_cite": f"{auth} ({year})",
+                "evidence": evidence,
+                "doi": paper.get('doi', '#')
+            })
+            
+            # Show the evidence card immediately so you know it's working
+            with st.expander(f"✅ Found Source: {auth} ({year})"):
+                st.markdown(f"**[{paper['display_name']}]({paper.get('doi', '#')})**")
+                st.info(f"**Evidence Quote:** {evidence}")
+        else:
+            st.warning(f"🔍 No 2022-2026 match for: {sent[:40]}...")
+            
+    except Exception as e:
+        st.error(f"OpenAlex Error: {e}")
 
-        for sent in sentences:
-            cit_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sent)
-            if cit_match:
-                auth, year = cit_match.groups()
-                
-                # OpenAlex Search (We use semantic search for better grounding)
-                # Adding mailto is 'polite' and gets you faster speeds
-                clean_query = sent.replace('"', '').replace('(', '').replace(')', '')
-                oa_url = f"https://api.openalex.org/works?search.semantic={clean_query}&filter=from_publication_date:{cutoff_year}-01-01&mailto=your-email@example.com"
-                
-                try:
-                    res = requests.get(oa_url).json()
-                    if res.get('results'):
-                        paper = res['results'][0]
-                        new_auth = paper['authorships'][0]['author']['display_name'] if paper['authorships'] else "Scholar"
-                        new_year = paper['publication_year']
-                        new_title = paper['display_name']
-                        new_doi = paper.get('doi', '#')
-                        
-                        # OpenAlex abstracts are 'inverted'. We must reconstruct them.
-                        inverted_index = paper.get('abstract_inverted_index', {})
-                        if inverted_index:
-                            # Simple reconstruction logic
-                            word_index = [(pos, word) for word, positions in inverted_index.items() for pos in positions]
-                            word_index.sort()
-                            evidence_quote = " ".join([w[1] for w in word_index])[:500] + "..."
-                        else:
-                            evidence_quote = "Abstract not available for this record."
-
-                        audit_data.append({
-                            "original_sent": sent,
-                            "new_cite": f"{new_auth} ({new_year})",
-                            "evidence": evidence_quote,
-                            "title": new_title,
-                            "link": new_doi
-                        })
-                        
-                        with st.expander(f"📌 Evidence: {new_auth} ({new_year})"):
-                            st.markdown(f"**[{new_title}]({new_doi})**")
-                            st.info(f"“{evidence_quote}”")
-                except: continue
-
-        # --- PHASE 2: DEEPSEEK REASONING (2026-STRICT) ---
-        if audit_data:
-            st.divider()
-            evidence_context = "\n".join([
-                f"CLAIM: {d['original_sent']}\nSOURCE: {d['new_cite']}\nEVIDENCE: {d['evidence']}" 
-                for d in audit_data
-            ])
-
-            with st.spinner("DeepSeek-V4-Pro is auditing the manuscript..."):
-                prompt = f"""
-                You are a Forensic Research Integrity AI. 
-                Use these <GROUNDED_SOURCES> to correct the user's text.
-                
-                <GROUNDED_SOURCES>
-                {evidence_context}
-                </GROUNDED_SOURCES>
-                
-                TASK:
-                1. DELTA TABLE: Original Claim | Evidence Fact | Source Link.
-                2. Q1 REWRITE: Rewrite the text to match the EVIDENCE. 
-                3. REJECTION RULE: If the evidence is irrelevant to the claim (e.g. claim is grammar, source is medicine), delete the claim.
-                """
-                
-                response = client.chat.completions.create(
-                    model="deepseek-ai/DeepSeek-V4-Pro",
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=2000,
-                    temperature=0.1
-                )
-                st.markdown(response.choices[0].message.content)
+# --- PHASE 2: DEEPSEEK REASONING ---
+if audit_data:
+    st.divider()
+    st.subheader("🧠 DeepSeek-V4-Pro Synthesis")
+    
+    # Structure the evidence context for DeepSeek
+    context = "\n".join([f"CLAIM: {d['original']}\nSOURCE: {d['new_cite']}\nEVIDENCE: {d['evidence']}" for d in audit_data])
+    
+    with st.spinner("DeepSeek is analyzing the evidence..."):
+        try:
+            # DeepSeek-V4-Pro excels with structured instructions
+            prompt = f"""
+            You are a Q1 Academic Forensic AI. 
+            Update the manuscript using ONLY the provided <evidence>.
+            
+            <evidence>
+            {context}
+            </evidence>
+            
+            TASK:
+            1. DELTA REPORT: A table showing [Old Claim] | [New Fact from Evidence] | [Source Link].
+            2. REWRITE: A high-impact academic paragraph.
+            3. REJECTION: If evidence doesn't support the claim, delete the claim.
+            """
+            
+            response = client.chat.completions.create(
+                model=model_id,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2500
+            )
+            
+            st.markdown(response.choices[0].message.content)
+        except Exception as e:
+            st.error(f"DeepSeek Synthesis Failed: {e}")
+            st.info("Check if your HF Token has access to the DeepSeek-V4-Pro model.")
+else:
+    st.info("Paste your text above and ensure 'Research Objective' is set to start the audit.")
