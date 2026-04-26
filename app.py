@@ -31,23 +31,21 @@ if st.button("EXECUTE SYNTHESIS"):
         # Initialize Client with the found token
         client = InferenceClient(model_id, token=hf_token)
         
-        # --- PHASE 1: PRECISION DISCOVERY ---
+        # --- PHASE 1: FORENSIC DISCOVERY WITH LINKS ---
         import datetime
         current_year = datetime.datetime.now().year
         cutoff_year = current_year - 4
         
         sentences = re.split(r'(?<=[.!?]) +', text_input)
-        audit_report = "" # FIX: Initializing the variable
+        audit_report = "" 
         
-        st.subheader(f"🔍 Discovery & Pivot Suggestions ({current_year})")
+        st.subheader(f"🔍 Discovery & Pivot Analysis ({current_year})")
 
         for sent in sentences:
             cit_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sent)
             if cit_match:
                 auth, year = cit_match.groups()
-                
-                # TIGHTENED SEARCH: Adding 'applied linguistics' to force relevancy
-                search_query = f"applied linguistics {obj} {sent[:30]}"
+                search_query = f"applied linguistics {obj} {sent[:35]}"
                 discovery_url = f"https://api.crossref.org/works?query={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=1"
                 
                 try:
@@ -58,45 +56,36 @@ if st.button("EXECUTE SYNTHESIS"):
                         top = items[0]
                         new_auth = top.get('author', [{'family': 'Scholar'}])[0].get('family')
                         new_year = top.get('created', {}).get('date-parts', [[2025]])[0][0]
-                        new_title = top.get('title', ['Research'])[0]
+                        new_title = top.get('title', ['Unknown Title'])[0]
+                        doi = top.get('URL', '#') # Scrapes the direct DOI link
                         
-                        # Add to the report that Phase 2 will read
-                        report_entry = f"Original: {sent} | REPLACE WITH: {new_auth} ({new_year}) - Topic: {new_title}"
+                        report_entry = f"Claim: {sent} | NEW: {new_auth} ({new_year}) | Topic: {new_title} | Link: {doi}"
                         audit_report += report_entry + "\n"
                         
-                        with st.expander(f"Pivot: {new_auth} ({new_year})"):
-                            st.write(f"**Found Paper:** {new_title}")
-                            st.info(f"**Machinery Action:** Pivoting claim to match '{new_auth}' findings.")
+                        with st.expander(f"📌 Pivot: {new_auth} ({new_year})"):
+                            st.markdown(f"**Actual Paper:** [{new_title}]({doi})")
+                            st.write(f"**Forensic Note:** Replacing outdated/hallucinated logic with current 2022-2026 data.")
                 except:
                     continue
 
-        # --- PHASE 2: THE SYNCED REWRITE ---
+        # --- PHASE 2: DELTA REPORT & SYNTHESIS ---
         st.divider()
-        st.subheader("🧠 Q1 Neural Manuscript Synthesis")
-        
-        if audit_report == "":
-            st.warning("No citations found to audit. Proceeding with stylistic rewrite only.")
-
-        with st.spinner("Synthesizing final draft with 2026 Discovery data..."):
-            try:
+        if audit_report:
+            with st.spinner("Analyzing Hallucinations & Synthesizing..."):
+                prompt = f"""
+                SYSTEM: You are a Forensic Academic Editor.
+                DATA: {audit_report}
+                ORIGINAL TEXT: {text_input}
+                
+                TASK:
+                1. Provide a 'DELTA REPORT' table: Column 1: Original Hallucination/Outdated Claim. Column 2: 2026 Updated Fact. Column 3: The New Source Link.
+                2. Provide the 'Q1 REWRITE' integrating these pivots.
+                3. Ensure no placeholders. Cite the actual authors found in the DATA.
+                """
                 response = client.chat.completions.create(
                     model=model_id,
-                    messages=[
-                        {
-                            "role": "system", 
-                            "content": f"You are a Q1 Editor. OBJECTIVE: {obj}. AUDIT REPORT: {audit_report}. REWRITE RULES: 1. You MUST use the new authors/years from the Audit Report. 2. Change the claim's wording to match the 'Topic' found in the report. 3. Ensure a seamless Q1 flow."
-                        },
-                        {
-                            "role": "user", 
-                            "content": f"Rewrite this text using the discovery data: {text_input}"
-                        }
-                    ],
-                    max_tokens=1200,
-                    temperature=0.2
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=1500,
+                    temperature=0.1
                 )
-                
-                q1_output = response.choices[0].message.content
-                st.success("Synthesis Complete")
-                st.write(q1_output)
-            except Exception as e:
-                st.error(f"Synthesis Engine Error: {e}")
+                st.write(response.choices[0].message.content)
