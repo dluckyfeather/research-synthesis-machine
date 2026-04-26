@@ -1,4 +1,3 @@
-# research-synthesis-machine
 ---
 title: Research Synthesis Machine
 emoji: 🛡️
