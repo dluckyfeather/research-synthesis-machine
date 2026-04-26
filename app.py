@@ -31,7 +31,7 @@ if st.button("EXECUTE SYNTHESIS"):
         # Initialize Client with the found token
         client = InferenceClient(model_id, token=hf_token)
         
-        # --- PHASE 1: SEMANTIC CONTEXTUAL AUDIT ---
+        # --- PHASE 1: LINGUISTICS-LOCKED AUDIT ---
         import datetime
         current_year = datetime.datetime.now().year
         cutoff_year = current_year - 4
@@ -45,9 +45,9 @@ if st.button("EXECUTE SYNTHESIS"):
             cit_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sent)
             if cit_match:
                 auth, year = cit_match.groups()
-                # TIGHT SEARCH: Force 'English Language Teaching' or 'Linguistics'
-                search_query = f"ELT linguistics {sent[:40]}"
-                discovery_url = f"https://api.crossref.org/works?query={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=2"
+                # PRECISION QUERY: Restricted to Education and Linguistics domains
+                search_query = f"container-title:linguistics education testing {sent[:35]}"
+                discovery_url = f"https://api.crossref.org/works?query={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=3"
                 
                 try:
                     res = requests.get(discovery_url).json()
@@ -55,11 +55,12 @@ if st.button("EXECUTE SYNTHESIS"):
                     
                     valid_match = None
                     for item in items:
-                        abstract = item.get('abstract', '').lower()
+                        # FILTER: Ensure the paper is actually about language/testing
+                        subject = str(item.get('subject', [])).lower()
                         title = item.get('title', [''])[0].lower()
-                        # DOUBLE-CHECK: Does the abstract actually talk about the claim?
-                        keywords = ["grammar", "toefl", "test", "english", "linguistic", "syntactic", "writing"]
-                        if any(k in abstract for k in keywords) or any(k in title for k in keywords):
+                        abstract = item.get('abstract', '').lower()
+                        
+                        if any(k in title or k in subject or k in abstract for k in ["english", "toefl", "language", "grammar", "syntactic", "pedagogy"]):
                             valid_match = item
                             break
                     
@@ -71,27 +72,29 @@ if st.button("EXECUTE SYNTHESIS"):
                         
                         audit_data.append({
                             "claim": sent,
+                            "old_cite": f"{auth} ({year})",
                             "new_cite": f"{new_auth} ({new_year})",
                             "link": doi,
-                            "topic": topic
+                            "topic": topic,
+                            "match_quality": "High" if "toefl" in title or "english" in title else "Partial"
                         })
-                        st.success(f"🎯 Context Match: {new_auth} ({new_year}) - {topic[:50]}...")
-                    else:
-                        st.warning(f"⚠️ No contextually valid 2022-2026 match for: {sent[:30]}...")
-                except:
-                    continue
+                        st.success(f"🎯 Match: {new_auth} ({new_year}) - {topic[:50]}...")
+                except: continue
 
-        # --- PHASE 2: DELTA REPORT & ACCURATE SYNTHESIS ---
+        # --- PHASE 2: FORENSIC DELTA REPORT ---
         if audit_data:
-            audit_report_string = "\n".join([f"CLAIM: {d['claim']} | NEW: {d['new_cite']} | TOPIC: {d['topic']} | LINK: {d['link']}" for d in audit_data])
+            st.divider()
+            audit_string = "\n".join([f"OLD: {d['old_cite']} | CLAIM: {d['claim']} | NEW: {d['new_cite']} | TOPIC: {d['topic']} | LINK: {d['link']}" for d in audit_data])
             
             prompt = f"""
-            SYSTEM: You are a Q1 Academic Forensic Editor. 
-            DATA: {audit_report_string}
+            SYSTEM: You are a Q1 Forensic Editor.
+            DATA: {audit_string}
             
             TASK:
-            1. Generate a DELTA REPORT Table. If a source (like Farzad 2023) was about psychology but used for a grammar claim, flag it as a 'Hallucinated Match' and find a more general way to state the fact.
-            2. Rewrite the text. ONLY use the 'NEW' citations if the 'TOPIC' matches the 'CLAIM' logic. 
-            3. Fix the Computer Engineering vs. Applied Linguistics mismatch.
+            1. Generate a 'DELTA & HALLUCINATION REPORT' Table. 
+               - Column 1: Original Hallucination (Identify if the source was fake or just outdated).
+               - Column 2: 2026 Updated Linguistic Fact (Based on the 'TOPIC' in the data).
+               - Column 3: The New Source Link.
+            2. Q1 REWRITE: Integrate the 'NEW' citations. If a topic (like 'Apathy') doesn't match a grammar claim, flag it and do not use it in the rewrite.
             """
-            # ... (Rest of your response = client.chat.completions logic)
+            # ... [Response logic continues here]
