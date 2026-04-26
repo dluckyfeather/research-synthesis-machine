@@ -31,7 +31,7 @@ if st.button("EXECUTE SYNTHESIS"):
         # Initialize Client with the found token
         client = InferenceClient(model_id, token=hf_token)
         
-        # --- PHASE 1: GROUNDED EVIDENCE DISCOVERY ---
+        # --- PHASE 1: SEMANTIC SCHOLAR DISCOVERY ---
         import datetime
         current_year = datetime.datetime.now().year
         cutoff_year = current_year - 4
@@ -39,58 +39,81 @@ if st.button("EXECUTE SYNTHESIS"):
         sentences = re.split(r'(?<=[.!?]) +', text_input)
         audit_data = [] 
 
+        st.subheader(f"📑 Grounded Evidence Cards ({current_year})")
+
         for sent in sentences:
             cit_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sent)
             if cit_match:
                 auth, year = cit_match.groups()
-                # Use 'query.bibliographic' for higher precision matching
-                search_query = f"{sent[:50]}"
-                discovery_url = f"https://api.crossref.org/works?query.bibliographic={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=1"
+                
+                # Semantic Scholar API URL (No key needed for low volume)
+                # We request 'tldr' and 'abstract' for maximum grounding
+                s2_url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={sent[:60]}&limit=1&fields=title,authors,year,url,abstract,tldr,venue"
                 
                 try:
-                    res = requests.get(discovery_url).json()
-                    item = res.get('message', {}).get('items', [{}])[0]
-                    
-                    if item:
-                        # Extracting the Grounding Quote
-                        raw_abstract = item.get('abstract', "No snippet available—verify via link.")
-                        # Clean up XML tags often found in Crossref abstracts
-                        clean_quote = re.sub('<[^<]+?>', '', raw_abstract)[:300] + "..."
+                    res = requests.get(s2_url).json()
+                    if res.get('data'):
+                        paper = res['data'][0]
+                        new_auth = paper['authors'][0]['name'] if paper['authors'] else "Scholar"
+                        new_year = paper['year']
+                        new_title = paper['title']
+                        new_url = paper['url']
                         
-                        new_auth = item.get('author', [{'family': 'Scholar'}])[0].get('family')
-                        new_year = item.get('created', {}).get('date-parts', [[2025]])[0][0]
-                        doi = item.get('URL', '#')
-                        title = item.get('title', ['Unknown'])[0]
-
-                        audit_data.append({
-                            "claim": sent,
-                            "quote": clean_quote,
-                            "new_cite": f"{new_auth} ({new_year})",
-                            "link": doi,
-                            "title": title
-                        })
+                        # NotebookLM Mechanism: Prefer TLDR, fallback to Abstract
+                        evidence_quote = paper.get('tldr', {}).get('text') if paper.get('tldr') else paper.get('abstract')
+                        if not evidence_quote: evidence_quote = "No snippet available—please verify via URL."
                         
-                        # UI: NotebookLM Style Source Card
-                        with st.container():
-                            st.markdown(f"**Source Evidence for:** '{sent[:40]}...'")
-                            st.caption(f"📄 {title}")
-                            st.info(f"“{clean_quote}”")
-                            st.markdown(f"[View Full Article]({doi})")
-                except: continue
+                        # Filtering for Recency
+                        if new_year and new_year >= cutoff_year:
+                            audit_data.append({
+                                "original_sent": sent,
+                                "new_cite": f"{new_auth} ({new_year})",
+                                "evidence": evidence_quote,
+                                "title": new_title,
+                                "link": new_url
+                            })
+                            
+                            # UI Evidence Card
+                            with st.container():
+                                st.markdown(f"**Evidence for Claim:** *\"{sent[:50]}...\"*")
+                                st.caption(f"📖 **{new_title}** ({new_year}) — {paper.get('venue', 'Academic Journal')}")
+                                st.info(f"“{evidence_quote[:400]}...”")
+                                st.markdown(f"[Source Link]({new_url})")
+                                st.divider()
+                except Exception as e:
+                    st.error(f"S2 API Error: {e}")
 
-        # --- PHASE 2: EVIDENCE-BASED SYNTHESIS ---
+        # --- PHASE 2: THE NOTEBOOK-STYLE SYNTHESIS ---
         if audit_data:
-            st.divider()
-            # Feeding the QUOTES into the LLM so it doesn't hallucinate
-            context_for_ai = "\n".join([f"CLAIM: {d['claim']} | QUOTE: {d['quote']} | NEW: {d['new_cite']}" for d in audit_data])
+            st.subheader("🧠 Grounded Q1 Rewrite")
             
-            prompt = f"""
-            SYSTEM: You are a Grounded Academic Editor. 
-            EVIDENCE: {context_for_ai}
-            
-            TASK:
-            1. Create a Table: [Original Claim] | [Actual Quote from Source] | [Correction].
-            2. Rewrite the text. You must ONLY use facts found in the 'QUOTE' section of the EVIDENCE. 
-            3. If the Quote does not support the Claim, delete the Claim.
-            """
-            # ... (Rest of chat completion call)
+            # Combine all evidence into one block for the LLM
+            evidence_context = "\n".join([
+                f"CLAIM: {d['original_sent']}\nEVIDENCE: {d['evidence']}\nNEW_SOURCE: {d['new_cite']}" 
+                for d in audit_data
+            ])
+
+            with st.spinner("Synthesizing based on retrieved evidence..."):
+                try:
+                    prompt = f"""
+                    SYSTEM: You are a Research Integrity AI. You use 'Grounded Theory' to rewrite text.
+                    EVIDENCE DATA:
+                    {evidence_context}
+                    
+                    TASK:
+                    1. Create a Table: [Original Hallucination] | [Direct Evidence Quote] | [Correction].
+                    2. Rewrite the text into a Q1 Literature Review.
+                    3. RULES: 
+                       - If the EVIDENCE contradicts the CLAIM, change the claim to match the evidence.
+                       - Use only the NEW_SOURCE names provided.
+                       - If no evidence is relevant, state 'Insufficient Evidence' and remove the claim.
+                    """
+                    response = client.chat.completions.create(
+                        model=model_id,
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=1500,
+                        temperature=0.1
+                    )
+                    st.markdown(response.choices[0].message.content)
+                except Exception as e:
+                    st.error(f"Synthesis Error: {e}")
