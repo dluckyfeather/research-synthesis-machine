@@ -31,16 +31,15 @@ if st.button("EXECUTE SYNTHESIS"):
         # Initialize Client with the found token
         client = InferenceClient(model_id, token=hf_token)
         
-        # --- PHASE 1: FORENSIC CLAIM VERIFICATION ---
+        # --- PHASE 1: FORENSIC AUDIT + AUTO-DISCOVERY ---
         import datetime
         current_year = datetime.datetime.now().year
         cutoff_year = current_year - 4
         
-        # Regex to find the sentence containing the citation
         sentences = re.split(r'(?<=[.!?]) +', text_input)
         audit_report = ""
         
-        st.subheader(f"🔍 Forensic Integrity Audit ({current_year})")
+        st.subheader(f"🔍 Forensic Integrity Audit & Discovery ({current_year})")
 
         for sentence in sentences:
             citation_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sentence)
@@ -48,75 +47,95 @@ if st.button("EXECUTE SYNTHESIS"):
                 author, year = citation_match.groups()
                 year_int = int(year)
                 
-                # 1. Fetch metadata + Abstract from Crossref
-                query = f"{author} {year} {sentence[:50]}"
+                # 1. Check existing source
+                query = f"{author} {year}"
                 res = requests.get(f"https://api.crossref.org/works?query.bibliographic={query}&rows=1").json()
                 items = res.get('message', {}).get('items', [])
                 
-                if items:
-                    item = items[0]
-                    title = item.get('title', ['Unknown'])[0]
-                    abstract = item.get('abstract', "No abstract available for automated matching.")
-                    actual_year = item.get('created', {}).get('date-parts', [[0]])[0][0]
-                    
-                    # 2. THE NEURAL VERDICT (Comparing Claim vs. Abstract)
-                    with st.spinner(f"Verifying claim for {author}..."):
-                        verdict_prompt = f"""
-                        COMPARE CLAIM VS DATA:
-                        Claim in Text: "{sentence}"
-                        Article Title: "{title}"
-                        Article Abstract: "{abstract}"
-                        
-                        Does the claim in the text accurately reflect the data/topic of the article?
-                        Respond with: [MATCH], [MISINTERPRETATION], or [UNVERIFIABLE].
-                        Briefly explain why.
-                        """
-                        verdict_res = client.chat.completions.create(
-                            model=model_id,
-                            messages=[{"role": "user", "content": verdict_prompt}],
-                            max_tokens=150
-                        )
-                        verdict = verdict_res.choices[0].message.content
+                status_msg = ""
+                replacement_info = ""
 
-                    # 3. THE WINDOW BOX UI
-                    color = "green" if "MATCH" in verdict and year_int >= cutoff_year else "red"
-                    border = "5px solid #2ecc71" if color == "green" else "5px solid #e74c3c"
-                    
-                    st.markdown(f"""
-                    <div style="background-color: #f9f9f9; border-left: {border}; padding: 15px; margin-bottom: 20px; border-radius: 5px;">
-                        <strong>📍 Claim Location:</strong> "{sentence}"<br>
-                        <strong>📄 Cited Article:</strong> {title} ({actual_year})<br>
-                        <strong>⚖️ Forensic Verdict:</strong> {verdict}<br>
-                        <strong>📅 Recency:</strong> {"✅ Pass" if year_int >= cutoff_year else "❌ Fail (Pre-"+str(cutoff_year)+")"}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    audit_report += f"Sentence: {sentence} | Verdict: {verdict}\n"
+                if items and year_int >= cutoff_year:
+                    # Source is VALID and RECENT
+                    title = items[0].get('title', ['Unknown'])[0]
+                    status_msg = f"✅ VALID: {author} ({year})"
+                    audit_report += f"Source {author} ({year}) is valid.\n"
                 else:
-                    st.error(f"🚨 HALLUCINATION: {author} ({year}) not found in database.")
+                    # Source is OUTDATED or MISSING -> Find Replacement
+                    st.warning(f"🔄 Finding replacement for outdated/invalid source: {author} ({year})")
+                    
+                    # NEW DISCOVERY SEARCH: Keyword-based, filtered by year
+                    search_keywords = f"{obj} {sentence[:30]}"
+                    discovery_url = f"https://api.crossref.org/works?query={search_keywords}&filter=from-pub-date:{cutoff_year}-01-01&rows=1"
+                    
+                    try:
+                        discovery_res = requests.get(discovery_url).json()
+                        new_items = discovery_res.get('message', {}).get('items', [])
+                        
+                        if new_items:
+                            new_paper = new_items[0]
+                            new_title = new_paper.get('title', ['Unknown Title'])[0]
+                            new_author = new_paper.get('author', [{'family': 'Recent Scholar'}])[0].get('family')
+                            new_year = new_paper.get('created', {}).get('date-parts', [[2025]])[0][0]
+                            
+                            replacement_info = f"💡 RECOMMENDED REPLACEMENT: {new_author} ({new_year}) - '{new_title}'"
+                            audit_report += f"REPLACE {author} ({year}) WITH {new_author} ({new_year}). Title: {new_title}\n"
+                        else:
+                            replacement_info = "⚠️ No recent 2022-2026 matches found for this specific claim."
+                    except:
+                        replacement_info = "Discovery engine connection error."
 
-        # --- PHASE 2: NEURAL SYNTHESIS (Updated for Conversational Task) ---
+                # UI Display
+                st.markdown(f"""
+                <div style="background-color: #f9f9f9; border-left: 5px solid {'#2ecc71' if not replacement_info else '#e74c3c'}; padding: 10px; margin-bottom: 10px;">
+                    <strong>Claim:</strong> "{sentence}"<br>
+                    <strong>Status:</strong> {status_msg if not replacement_info else '❌ Outdated/Invalid'}<br>
+                    <span style="color: blue;">{replacement_info}</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+          # --- PHASE 2: NEURAL SYNTHESIS (The Executive Editor) ---
         st.divider()
-        st.subheader("🧠 Q1 Neural Rewrite")
+        st.subheader("🧠 Q1 Neural Manuscript Synthesis")
         
-        with st.spinner("Synthesizing through Hugging Face Chat Layers..."):
+        with st.spinner("Executing final synthesis and citation replacement..."):
             try:
-                # Switching to the Chat Completion method to satisfy the provider
+                # The 'brain' now receives the audit as a set of instructions
                 response = client.chat.completions.create(
                     model=model_id,
                     messages=[
-                        {"role": "system", "content": f"You are a Q1 Academic Editor. Objective: {obj}. Audit Report: {audit_report}"},
-                        {"role": "user", "content": f"Rewrite this text for high-impact flow and interconnectedness. Fix citations: {text_input}"}
+                        {
+                            "role": "system", 
+                            "content": f"""You are a Q1 Academic Editor. 
+                            GOAL: {obj}
+                            
+                            INSTRUCTIONS:
+                            1. Read the AUDIT REPORT: {audit_report}
+                            2. If a citation was flagged as OUTDATED or MISINTERPRETED, REPLACE it in the text with the 'RECOMMENDED REPLACEMENT' provided in the report.
+                            3. If no replacement was found for an old source, remove the citation and frame the claim as a 'historically established' or 'foundational' concept.
+                            4. Ensure all new citations are integrated naturally (e.g., 'As demonstrated by NewAuthor (2025)...').
+                            5. Use sophisticated academic transitions (e.g., 'Synthetically,' 'Conversely,' 'Building upon the neuro-linguistic framework...')."""
+                        },
+                        {
+                            "role": "user", 
+                            "content": f"Apply these structural and factual fixes to the following text: {text_input}"
+                        }
                     ],
-                    max_tokens=1000,
+                    max_tokens=1200,
                     temperature=0.2
                 )
                 
-                # Extract the message content correctly
-                q1_output = response.choices[0].message.content
+                final_manuscript = response.choices[0].message.content
                 
-                st.success("Synthesis Complete")
-                st.write(q1_output)
-                st.download_button("Download Q1 Manuscript", q1_output, "Q1_Revised.txt")
+                st.success("Q1 Synthesis Complete")
+                st.markdown("### 📄 Revised Manuscript")
+                st.write(final_manuscript)
+                
+                st.download_button(
+                    label="Download Q1-Ready Draft",
+                    data=final_manuscript,
+                    file_name=f"Q1_Research_Draft_{current_year}.txt",
+                    mime="text/plain"
+                )
             except Exception as e:
-                st.error(f"Neural Engine Error: {e}. Try changing the Model ID in the sidebar to 'meta-llama/Llama-3.2-3B-Instruct' if this persists.")
+                st.error(f"Synthesis Engine Error: {e}")
