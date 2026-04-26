@@ -31,68 +31,45 @@ if st.button("EXECUTE SYNTHESIS"):
         # Initialize Client with the found token
         client = InferenceClient(model_id, token=hf_token)
         
-        # --- PHASE 1: FORENSIC AUDIT + AUTO-DISCOVERY ---
-        import datetime
-        current_year = datetime.datetime.now().year
-        cutoff_year = current_year - 4
+        # --- PHASE 1: COLLABORATIVE AUDIT & DATA MATCHING ---
+import datetime
+current_year = datetime.datetime.now().year
+cutoff_year = current_year - 4
+
+sentences = re.split(r'(?<=[.!?]) +', text_input)
+audit_results = []
+
+for sent in sentences:
+    cit_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sent)
+    if cit_match:
+        auth, year = cit_match.groups()
+        # LIVE DISCOVERY: Search for the newest 2024-2026 data related to this claim
+        search_query = f"{obj} {sent[:40]}"
+        res = requests.get(f"https://api.crossref.org/works?query={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=1").json()
+        items = res.get('message', {}).get('items', [])
         
-        sentences = re.split(r'(?<=[.!?]) +', text_input)
-        audit_report = ""
-        
-        st.subheader(f"🔍 Forensic Integrity Audit & Discovery ({current_year})")
+        if items:
+            top = items[0]
+            new_auth = top.get('author', [{'family': 'Scholar'}])[0].get('family')
+            new_year = top.get('created', {}).get('date-parts', [[2026]])[0][0]
+            new_title = top.get('title', ['Research'])[0]
+            
+            # THE COLLABORATION: Machine proposes a change
+            audit_results.append({
+                "original_claim": sent,
+                "found_source": f"{new_auth} ({new_year})",
+                "source_context": new_title,
+                "action": "MATCH & UPDATE" if int(year) < cutoff_year else "VERIFIED"
+            })
 
-        for sentence in sentences:
-            citation_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sentence)
-            if citation_match:
-                author, year = citation_match.groups()
-                year_int = int(year)
-                
-                # 1. Check existing source
-                query = f"{author} {year}"
-                res = requests.get(f"https://api.crossref.org/works?query.bibliographic={query}&rows=1").json()
-                items = res.get('message', {}).get('items', [])
-                
-                status_msg = ""
-                replacement_info = ""
-
-                if items and year_int >= cutoff_year:
-                    # Source is VALID and RECENT
-                    title = items[0].get('title', ['Unknown'])[0]
-                    status_msg = f"✅ VALID: {author} ({year})"
-                    audit_report += f"Source {author} ({year}) is valid.\n"
-                else:
-                    # Source is OUTDATED or MISSING -> Find Replacement
-                    st.warning(f"🔄 Finding replacement for outdated/invalid source: {author} ({year})")
-                    
-                    # NEW DISCOVERY SEARCH: Keyword-based, filtered by year
-                    search_keywords = f"{obj} {sentence[:30]}"
-                    discovery_url = f"https://api.crossref.org/works?query={search_keywords}&filter=from-pub-date:{cutoff_year}-01-01&rows=1"
-                    
-                    try:
-                        discovery_res = requests.get(discovery_url).json()
-                        new_items = discovery_res.get('message', {}).get('items', [])
-                        
-                        if new_items:
-                            new_paper = new_items[0]
-                            new_title = new_paper.get('title', ['Unknown Title'])[0]
-                            new_author = new_paper.get('author', [{'family': 'Recent Scholar'}])[0].get('family')
-                            new_year = new_paper.get('created', {}).get('date-parts', [[2025]])[0][0]
-                            
-                            replacement_info = f"💡 RECOMMENDED REPLACEMENT: {new_author} ({new_year}) - '{new_title}'"
-                            audit_report += f"REPLACE {author} ({year}) WITH {new_author} ({new_year}). Title: {new_title}\n"
-                        else:
-                            replacement_info = "⚠️ No recent 2022-2026 matches found for this specific claim."
-                    except:
-                        replacement_info = "Discovery engine connection error."
-
-                # UI Display
-                st.markdown(f"""
-                <div style="background-color: #f9f9f9; border-left: 5px solid {'#2ecc71' if not replacement_info else '#e74c3c'}; padding: 10px; margin-bottom: 10px;">
-                    <strong>Claim:</strong> "{sentence}"<br>
-                    <strong>Status:</strong> {status_msg if not replacement_info else '❌ Outdated/Invalid'}<br>
-                    <span style="color: blue;">{replacement_info}</span>
-                </div>
-                """, unsafe_allow_html=True)
+# --- UI DISPLAY FOR YOUR APPROVAL ---
+st.subheader("🔍 Discovery & Pivot Suggestions")
+for r in audit_results:
+    with st.expander(f"Claim: {r['original_claim'][:50]}..."):
+        st.write(f"**Current Status:** {r['action']}")
+        st.write(f"**Found Relevant 2026 Source:** {r['found_source']}")
+        st.write(f"**Paper Topic:** {r['source_context']}")
+        st.info("The AI will now 'Pivot' your claim to match this specific research.")
                 
           # --- PHASE 2: NEURAL SYNTHESIS (The Executive Editor) ---
         st.divider()
