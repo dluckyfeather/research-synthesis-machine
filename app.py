@@ -3,10 +3,29 @@ import requests
 import re
 from huggingface_hub import InferenceClient
 
-# --- SETUP ---
-client = InferenceClient(api_key=hf_token) # Ensure your token is valid
-model_id = "deepseek-ai/DeepSeek-V4-Pro"
+import streamlit as st
+import requests
+import re
+from huggingface_hub import InferenceClient
 
+# --- ⚙️ MACHINE SETTINGS (AUTO-LOAD) ---
+# This checks if the token exists in your GitHub/Streamlit secrets
+if "HF_TOKEN" in st.secrets:
+    hf_token = st.secrets["HF_TOKEN"]
+else:
+    # Fallback: if secret is missing, allow manual input
+    with st.sidebar:
+        hf_token = st.text_input("HF Token (Secret not found)", type="password")
+
+# --- 🚀 INITIALIZE CLIENT ---
+if hf_token:
+    client = InferenceClient(api_key=hf_token)
+else:
+    st.error("❌ Machine Offline: HF_TOKEN not found in Secrets or Sidebar.")
+    st.stop()
+
+# Set Model ID (You can also put this in secrets if you want to change models remotely)
+model_id = st.sidebar.text_input("Model ID", value="deepseek-ai/DeepSeek-V4-Pro")
 # --- PHASE 1: OPENALEX GROUNDING ---
 st.subheader("📑 OpenAlex Evidence Cards (2026)")
 sentences = re.split(r'(?<=[.!?]) +', text_input)
