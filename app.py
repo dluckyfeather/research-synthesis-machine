@@ -31,70 +31,76 @@ if st.button("EXECUTE SYNTHESIS"):
         # Initialize Client with the found token
         client = InferenceClient(model_id, token=hf_token)
         
-        # --- PHASE 1: LINGUISTICS-LOCKED AUDIT ---
+        # --- PHASE 1 & 2: INTEGRATED FORENSIC SYNC ---
         import datetime
         current_year = datetime.datetime.now().year
         cutoff_year = current_year - 4
         
         sentences = re.split(r'(?<=[.!?]) +', text_input)
-        audit_data = [] 
+        audit_entries = [] 
         
-        st.subheader(f"🔍 Semantic Forensic Audit ({current_year})")
+        st.subheader(f"🔍 Forensic Audit & Discovery ({current_year})")
 
         for sent in sentences:
             cit_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sent)
             if cit_match:
                 auth, year = cit_match.groups()
-                # PRECISION QUERY: Restricted to Education and Linguistics domains
-                search_query = f"container-title:linguistics education testing {sent[:35]}"
-                discovery_url = f"https://api.crossref.org/works?query={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=3"
+                # TIGHT SEARCH: Force linguistic context
+                search_query = f"linguistics testing grammar {sent[:30]}"
+                discovery_url = f"https://api.crossref.org/works?query={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=2"
                 
                 try:
                     res = requests.get(discovery_url).json()
-                    items = res.get('message', {}).get('items', [])
+                    item = res.get('message', {}).get('items', [{}])[0]
                     
-                    valid_match = None
-                    for item in items:
-                        # FILTER: Ensure the paper is actually about language/testing
-                        subject = str(item.get('subject', [])).lower()
-                        title = item.get('title', [''])[0].lower()
-                        abstract = item.get('abstract', '').lower()
+                    if item:
+                        new_auth = item.get('author', [{'family': 'Scholar'}])[0].get('family')
+                        new_year = item.get('created', {}).get('date-parts', [[2025]])[0][0]
+                        doi = item.get('URL', '#')
+                        title = item.get('title', ['Unknown'])[0]
                         
-                        if any(k in title or k in subject or k in abstract for k in ["english", "toefl", "language", "grammar", "syntactic", "pedagogy"]):
-                            valid_match = item
-                            break
-                    
-                    if valid_match:
-                        new_auth = valid_match.get('author', [{'family': 'Scholar'}])[0].get('family')
-                        new_year = valid_match.get('created', {}).get('date-parts', [[2025]])[0][0]
-                        doi = valid_match.get('URL', '#')
-                        topic = valid_match.get('title', ['Unknown'])[0]
+                        # LOGIC: Is this actually about the claim?
+                        is_relevant = any(k in title.lower() for k in ["english", "grammar", "toefl", "test", "writing", "linguistic"])
                         
-                        audit_data.append({
-                            "claim": sent,
-                            "old_cite": f"{auth} ({year})",
-                            "new_cite": f"{new_auth} ({new_year})",
+                        audit_entries.append({
+                            "old": f"{auth} ({year})",
+                            "new": f"{new_auth} ({new_year})",
                             "link": doi,
-                            "topic": topic,
-                            "match_quality": "High" if "toefl" in title or "english" in title else "Partial"
+                            "topic": title,
+                            "relevant": is_relevant,
+                            "claim": sent
                         })
-                        st.success(f"🎯 Match: {new_auth} ({new_year}) - {topic[:50]}...")
+                        
+                        icon = "🎯" if is_relevant else "⚠️"
+                        st.write(f"{icon} **Found:** {new_auth} ({new_year}) - *{title[:60]}...*")
                 except: continue
 
-        # --- PHASE 2: FORENSIC DELTA REPORT ---
-        if audit_data:
+        # --- FINAL PHASE: THE DELTA REPORT & REWRITE ---
+        if audit_entries:
             st.divider()
-            audit_string = "\n".join([f"OLD: {d['old_cite']} | CLAIM: {d['claim']} | NEW: {d['new_cite']} | TOPIC: {d['topic']} | LINK: {d['link']}" for d in audit_data])
+            report_context = "\n".join([f"CLAIM: {d['claim']} | NEW_SOURCE: {d['new']} | TOPIC: {d['topic']} | RELEVANT: {d['relevant']} | LINK: {d['link']}" for d in audit_entries])
             
-            prompt = f"""
-            SYSTEM: You are a Q1 Forensic Editor.
-            DATA: {audit_string}
-            
-            TASK:
-            1. Generate a 'DELTA & HALLUCINATION REPORT' Table. 
-               - Column 1: Original Hallucination (Identify if the source was fake or just outdated).
-               - Column 2: 2026 Updated Linguistic Fact (Based on the 'TOPIC' in the data).
-               - Column 3: The New Source Link.
-            2. Q1 REWRITE: Integrate the 'NEW' citations. If a topic (like 'Apathy') doesn't match a grammar claim, flag it and do not use it in the rewrite.
-            """
-            # ... [Response logic continues here]
+            with st.spinner("Generating Delta Report & Q1 Rewrite..."):
+                try:
+                    prompt = f"""
+                    SYSTEM: You are a Q1 Academic Forensic Editor. 
+                    CONTEXT: {report_context}
+                    
+                    TASK:
+                    1. Display a 'DELTA REPORT' Markdown table. 
+                       - Column 1: Hallucination/Outdated (The old citation).
+                       - Column 2: 2026 Fact (Update based on the NEW_SOURCE topic).
+                       - Column 3: Source Link.
+                       - If RELEVANT is False, flag it as 'MISMATCHED TOPIC' and explain why.
+                    2. Provide the 'Q1 REWRITE'. Use only the RELEVANT new sources. If a source is irrelevant, rewrite the claim as a general consensus without a citation.
+                    """
+                    response = client.chat.completions.create(
+                        model=model_id,
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=1500,
+                        temperature=0.1
+                    )
+                    st.markdown("### 📊 Delta & Hallucination Report")
+                    st.write(response.choices[0].message.content)
+                except Exception as e:
+                    st.error(f"Synthesis failed: {e}")
