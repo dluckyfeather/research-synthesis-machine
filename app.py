@@ -3,27 +3,34 @@ import requests
 import re
 from huggingface_hub import InferenceClient
 
-import streamlit as st
-import requests
-import re
-from huggingface_hub import InferenceClient
+# --- ⚙️ SECRETS HANDLER ---
+hf_token = None
 
-# --- ⚙️ MACHINE SETTINGS (AUTO-LOAD) ---
-# This checks if the token exists in your GitHub/Streamlit secrets
-if "HF_TOKEN" in st.secrets:
-    hf_token = st.secrets["HF_TOKEN"]
-else:
-    # Fallback: if secret is missing, allow manual input
-    with st.sidebar:
-        hf_token = st.text_input("HF Token (Secret not found)", type="password")
+try:
+    # Attempt to load from Streamlit Cloud/Local Secrets
+    if "HF_TOKEN" in st.secrets:
+        hf_token = st.secrets["HF_TOKEN"]
+except Exception:
+    # If secrets.toml doesn't exist, this prevents the crash
+    hf_token = None
 
-# --- 🚀 INITIALIZE CLIENT ---
-if hf_token:
-    client = InferenceClient(api_key=hf_token)
-else:
-    st.error("❌ Machine Offline: HF_TOKEN not found in Secrets or Sidebar.")
+# --- 🚀 SIDEBAR FALLBACK ---
+with st.sidebar:
+    st.header("⚙️ Machine Settings")
+    if not hf_token:
+        hf_token = st.text_input("HF Token (Required)", type="password", help="Paste your token here since secrets.toml was not found.")
+    else:
+        st.success("✅ HF_TOKEN loaded from Secrets")
+    
+    model_id = st.text_input("Model ID", value="deepseek-ai/DeepSeek-V4-Pro")
+
+# --- 🛡️ LOCK THE ENGINE ---
+if not hf_token:
+    st.warning("⚠️ Waiting for HF Token to initialize the engine...")
     st.stop()
 
+# Now it's safe to initialize
+client = InferenceClient(api_key=hf_token)
 # Set Model ID (You can also put this in secrets if you want to change models remotely)
 model_id = st.sidebar.text_input("Model ID", value="deepseek-ai/DeepSeek-V4-Pro")
 # --- PHASE 1: OPENALEX GROUNDING ---
