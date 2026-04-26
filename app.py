@@ -31,7 +31,7 @@ if st.button("EXECUTE SYNTHESIS"):
         # Initialize Client with the found token
         client = InferenceClient(model_id, token=hf_token)
         
-        # --- PHASE 1: SEMANTIC SCHOLAR DISCOVERY ---
+        # --- PHASE 1: OPENALEX PRECISION DISCOVERY ---
         import datetime
         current_year = datetime.datetime.now().year
         cutoff_year = current_year - 4
@@ -39,81 +39,77 @@ if st.button("EXECUTE SYNTHESIS"):
         sentences = re.split(r'(?<=[.!?]) +', text_input)
         audit_data = [] 
 
-        st.subheader(f"📑 Grounded Evidence Cards ({current_year})")
+        st.subheader(f"📑 OpenAlex Evidence Cards ({current_year})")
 
         for sent in sentences:
             cit_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sent)
             if cit_match:
                 auth, year = cit_match.groups()
                 
-                # Semantic Scholar API URL (No key needed for low volume)
-                # We request 'tldr' and 'abstract' for maximum grounding
-                s2_url = f"https://api.semanticscholar.org/graph/v1/paper/search?query={sent[:60]}&limit=1&fields=title,authors,year,url,abstract,tldr,venue"
+                # OpenAlex Search (We use semantic search for better grounding)
+                # Adding mailto is 'polite' and gets you faster speeds
+                clean_query = sent.replace('"', '').replace('(', '').replace(')', '')
+                oa_url = f"https://api.openalex.org/works?search.semantic={clean_query}&filter=from_publication_date:{cutoff_year}-01-01&mailto=your-email@example.com"
                 
                 try:
-                    res = requests.get(s2_url).json()
-                    if res.get('data'):
-                        paper = res['data'][0]
-                        new_auth = paper['authors'][0]['name'] if paper['authors'] else "Scholar"
-                        new_year = paper['year']
-                        new_title = paper['title']
-                        new_url = paper['url']
+                    res = requests.get(oa_url).json()
+                    if res.get('results'):
+                        paper = res['results'][0]
+                        new_auth = paper['authorships'][0]['author']['display_name'] if paper['authorships'] else "Scholar"
+                        new_year = paper['publication_year']
+                        new_title = paper['display_name']
+                        new_doi = paper.get('doi', '#')
                         
-                        # NotebookLM Mechanism: Prefer TLDR, fallback to Abstract
-                        evidence_quote = paper.get('tldr', {}).get('text') if paper.get('tldr') else paper.get('abstract')
-                        if not evidence_quote: evidence_quote = "No snippet available—please verify via URL."
-                        
-                        # Filtering for Recency
-                        if new_year and new_year >= cutoff_year:
-                            audit_data.append({
-                                "original_sent": sent,
-                                "new_cite": f"{new_auth} ({new_year})",
-                                "evidence": evidence_quote,
-                                "title": new_title,
-                                "link": new_url
-                            })
-                            
-                            # UI Evidence Card
-                            with st.container():
-                                st.markdown(f"**Evidence for Claim:** *\"{sent[:50]}...\"*")
-                                st.caption(f"📖 **{new_title}** ({new_year}) — {paper.get('venue', 'Academic Journal')}")
-                                st.info(f"“{evidence_quote[:400]}...”")
-                                st.markdown(f"[Source Link]({new_url})")
-                                st.divider()
-                except Exception as e:
-                    st.error(f"S2 API Error: {e}")
+                        # OpenAlex abstracts are 'inverted'. We must reconstruct them.
+                        inverted_index = paper.get('abstract_inverted_index', {})
+                        if inverted_index:
+                            # Simple reconstruction logic
+                            word_index = [(pos, word) for word, positions in inverted_index.items() for pos in positions]
+                            word_index.sort()
+                            evidence_quote = " ".join([w[1] for w in word_index])[:500] + "..."
+                        else:
+                            evidence_quote = "Abstract not available for this record."
 
-        # --- PHASE 2: THE NOTEBOOK-STYLE SYNTHESIS ---
+                        audit_data.append({
+                            "original_sent": sent,
+                            "new_cite": f"{new_auth} ({new_year})",
+                            "evidence": evidence_quote,
+                            "title": new_title,
+                            "link": new_doi
+                        })
+                        
+                        with st.expander(f"📌 Evidence: {new_auth} ({new_year})"):
+                            st.markdown(f"**[{new_title}]({new_doi})**")
+                            st.info(f"“{evidence_quote}”")
+                except: continue
+
+        # --- PHASE 2: DEEPSEEK REASONING (2026-STRICT) ---
         if audit_data:
-            st.subheader("🧠 Grounded Q1 Rewrite")
-            
-            # Combine all evidence into one block for the LLM
+            st.divider()
             evidence_context = "\n".join([
-                f"CLAIM: {d['original_sent']}\nEVIDENCE: {d['evidence']}\nNEW_SOURCE: {d['new_cite']}" 
+                f"CLAIM: {d['original_sent']}\nSOURCE: {d['new_cite']}\nEVIDENCE: {d['evidence']}" 
                 for d in audit_data
             ])
 
-            with st.spinner("Synthesizing based on retrieved evidence..."):
-                try:
-                    prompt = f"""
-                    SYSTEM: You are a Research Integrity AI. You use 'Grounded Theory' to rewrite text.
-                    EVIDENCE DATA:
-                    {evidence_context}
-                    
-                    TASK:
-                    1. Create a Table: [Original Hallucination] | [Direct Evidence Quote] | [Correction].
-                    2. Rewrite the text into a Q1 Literature Review.
-                    3. RULES: 
-                       - If the EVIDENCE contradicts the CLAIM, change the claim to match the evidence.
-                       - Use only the NEW_SOURCE names provided.
-                       - If no evidence is relevant, state 'Insufficient Evidence' and remove the claim.
-                    """
-                    response = client.chat.completions.create(
-                        model=model_id,
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=1500,
-                        temperature=0.1
-                    )
-                    st.markdown(response.choices[0].message.content)
-                except Exception as e:
-                    st.error(f"Synthesis Error: {e}")
+            with st.spinner("DeepSeek-V4-Pro is auditing the manuscript..."):
+                prompt = f"""
+                You are a Forensic Research Integrity AI. 
+                Use these <GROUNDED_SOURCES> to correct the user's text.
+                
+                <GROUNDED_SOURCES>
+                {evidence_context}
+                </GROUNDED_SOURCES>
+                
+                TASK:
+                1. DELTA TABLE: Original Claim | Evidence Fact | Source Link.
+                2. Q1 REWRITE: Rewrite the text to match the EVIDENCE. 
+                3. REJECTION RULE: If the evidence is irrelevant to the claim (e.g. claim is grammar, source is medicine), delete the claim.
+                """
+                
+                response = client.chat.completions.create(
+                    model="deepseek-ai/DeepSeek-V4-Pro",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=2000,
+                    temperature=0.1
+                )
+                st.markdown(response.choices[0].message.content)
