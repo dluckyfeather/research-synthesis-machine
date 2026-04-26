@@ -31,25 +31,69 @@ if st.button("EXECUTE SYNTHESIS"):
         # Initialize Client with the found token
         client = InferenceClient(model_id, token=hf_token)
         
-        # --- PHASE 1: API AUDIT ---
-        citations = re.findall(r'\(([^)]+),?\s(\d{4})\)', text_input)
+        # --- PHASE 1: FORENSIC CLAIM VERIFICATION ---
+        import datetime
+        current_year = datetime.datetime.now().year
+        cutoff_year = current_year - 4
+        
+        # Regex to find the sentence containing the citation
+        sentences = re.split(r'(?<=[.!?]) +', text_input)
         audit_report = ""
         
-        st.subheader("🔍 Integrity Audit")
-        for author, year in citations:
-            query = f"{author} {year}"
-            try:
+        st.subheader(f"🔍 Forensic Integrity Audit ({current_year})")
+
+        for sentence in sentences:
+            citation_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sentence)
+            if citation_match:
+                author, year = citation_match.groups()
+                year_int = int(year)
+                
+                # 1. Fetch metadata + Abstract from Crossref
+                query = f"{author} {year} {sentence[:50]}"
                 res = requests.get(f"https://api.crossref.org/works?query.bibliographic={query}&rows=1").json()
                 items = res.get('message', {}).get('items', [])
+                
                 if items:
-                    title = items[0].get('title', ['Unknown'])[0]
-                    audit_report += f"- VERIFIED: {author} ({year}) matches '{title}'\n"
-                    st.markdown(f'<div class="proof-box">🟢 <b>{author} ({year})</b>: {title}</div>', unsafe_allow_html=True)
+                    item = items[0]
+                    title = item.get('title', ['Unknown'])[0]
+                    abstract = item.get('abstract', "No abstract available for automated matching.")
+                    actual_year = item.get('created', {}).get('date-parts', [[0]])[0][0]
+                    
+                    # 2. THE NEURAL VERDICT (Comparing Claim vs. Abstract)
+                    with st.spinner(f"Verifying claim for {author}..."):
+                        verdict_prompt = f"""
+                        COMPARE CLAIM VS DATA:
+                        Claim in Text: "{sentence}"
+                        Article Title: "{title}"
+                        Article Abstract: "{abstract}"
+                        
+                        Does the claim in the text accurately reflect the data/topic of the article?
+                        Respond with: [MATCH], [MISINTERPRETATION], or [UNVERIFIABLE].
+                        Briefly explain why.
+                        """
+                        verdict_res = client.chat.completions.create(
+                            model=model_id,
+                            messages=[{"role": "user", "content": verdict_prompt}],
+                            max_tokens=150
+                        )
+                        verdict = verdict_res.choices[0].message.content
+
+                    # 3. THE WINDOW BOX UI
+                    color = "green" if "MATCH" in verdict and year_int >= cutoff_year else "red"
+                    border = "5px solid #2ecc71" if color == "green" else "5px solid #e74c3c"
+                    
+                    st.markdown(f"""
+                    <div style="background-color: #f9f9f9; border-left: {border}; padding: 15px; margin-bottom: 20px; border-radius: 5px;">
+                        <strong>📍 Claim Location:</strong> "{sentence}"<br>
+                        <strong>📄 Cited Article:</strong> {title} ({actual_year})<br>
+                        <strong>⚖️ Forensic Verdict:</strong> {verdict}<br>
+                        <strong>📅 Recency:</strong> {"✅ Pass" if year_int >= cutoff_year else "❌ Fail (Pre-"+str(cutoff_year)+")"}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    audit_report += f"Sentence: {sentence} | Verdict: {verdict}\n"
                 else:
-                    audit_report += f"- WARNING: {author} ({year}) could not be verified.\n"
-                    st.error(f"🔴 Possible Hallucination: {author} ({year})")
-            except:
-                st.warning(f"Connection issue verifying {author}")
+                    st.error(f"🚨 HALLUCINATION: {author} ({year}) not found in database.")
 
         # --- PHASE 2: NEURAL SYNTHESIS (Updated for Conversational Task) ---
         st.divider()
