@@ -31,76 +31,66 @@ if st.button("EXECUTE SYNTHESIS"):
         # Initialize Client with the found token
         client = InferenceClient(model_id, token=hf_token)
         
-        # --- PHASE 1 & 2: INTEGRATED FORENSIC SYNC ---
+        # --- PHASE 1: GROUNDED EVIDENCE DISCOVERY ---
         import datetime
         current_year = datetime.datetime.now().year
         cutoff_year = current_year - 4
         
         sentences = re.split(r'(?<=[.!?]) +', text_input)
-        audit_entries = [] 
-        
-        st.subheader(f"🔍 Forensic Audit & Discovery ({current_year})")
+        audit_data = [] 
 
         for sent in sentences:
             cit_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sent)
             if cit_match:
                 auth, year = cit_match.groups()
-                # TIGHT SEARCH: Force linguistic context
-                search_query = f"linguistics testing grammar {sent[:30]}"
-                discovery_url = f"https://api.crossref.org/works?query={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=2"
+                # Use 'query.bibliographic' for higher precision matching
+                search_query = f"{sent[:50]}"
+                discovery_url = f"https://api.crossref.org/works?query.bibliographic={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=1"
                 
                 try:
                     res = requests.get(discovery_url).json()
                     item = res.get('message', {}).get('items', [{}])[0]
                     
                     if item:
+                        # Extracting the Grounding Quote
+                        raw_abstract = item.get('abstract', "No snippet available—verify via link.")
+                        # Clean up XML tags often found in Crossref abstracts
+                        clean_quote = re.sub('<[^<]+?>', '', raw_abstract)[:300] + "..."
+                        
                         new_auth = item.get('author', [{'family': 'Scholar'}])[0].get('family')
                         new_year = item.get('created', {}).get('date-parts', [[2025]])[0][0]
                         doi = item.get('URL', '#')
                         title = item.get('title', ['Unknown'])[0]
-                        
-                        # LOGIC: Is this actually about the claim?
-                        is_relevant = any(k in title.lower() for k in ["english", "grammar", "toefl", "test", "writing", "linguistic"])
-                        
-                        audit_entries.append({
-                            "old": f"{auth} ({year})",
-                            "new": f"{new_auth} ({new_year})",
+
+                        audit_data.append({
+                            "claim": sent,
+                            "quote": clean_quote,
+                            "new_cite": f"{new_auth} ({new_year})",
                             "link": doi,
-                            "topic": title,
-                            "relevant": is_relevant,
-                            "claim": sent
+                            "title": title
                         })
                         
-                        icon = "🎯" if is_relevant else "⚠️"
-                        st.write(f"{icon} **Found:** {new_auth} ({new_year}) - *{title[:60]}...*")
+                        # UI: NotebookLM Style Source Card
+                        with st.container():
+                            st.markdown(f"**Source Evidence for:** '{sent[:40]}...'")
+                            st.caption(f"📄 {title}")
+                            st.info(f"“{clean_quote}”")
+                            st.markdown(f"[View Full Article]({doi})")
                 except: continue
 
-        # --- FINAL PHASE: THE DELTA REPORT & REWRITE ---
-        if audit_entries:
+        # --- PHASE 2: EVIDENCE-BASED SYNTHESIS ---
+        if audit_data:
             st.divider()
-            report_context = "\n".join([f"CLAIM: {d['claim']} | NEW_SOURCE: {d['new']} | TOPIC: {d['topic']} | RELEVANT: {d['relevant']} | LINK: {d['link']}" for d in audit_entries])
+            # Feeding the QUOTES into the LLM so it doesn't hallucinate
+            context_for_ai = "\n".join([f"CLAIM: {d['claim']} | QUOTE: {d['quote']} | NEW: {d['new_cite']}" for d in audit_data])
             
-            with st.spinner("Generating Delta Report & Q1 Rewrite..."):
-                try:
-                    prompt = f"""
-                    SYSTEM: You are a Q1 Academic Forensic Editor. 
-                    CONTEXT: {report_context}
-                    
-                    TASK:
-                    1. Display a 'DELTA REPORT' Markdown table. 
-                       - Column 1: Hallucination/Outdated (The old citation).
-                       - Column 2: 2026 Fact (Update based on the NEW_SOURCE topic).
-                       - Column 3: Source Link.
-                       - If RELEVANT is False, flag it as 'MISMATCHED TOPIC' and explain why.
-                    2. Provide the 'Q1 REWRITE'. Use only the RELEVANT new sources. If a source is irrelevant, rewrite the claim as a general consensus without a citation.
-                    """
-                    response = client.chat.completions.create(
-                        model=model_id,
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=1500,
-                        temperature=0.1
-                    )
-                    st.markdown("### 📊 Delta & Hallucination Report")
-                    st.write(response.choices[0].message.content)
-                except Exception as e:
-                    st.error(f"Synthesis failed: {e}")
+            prompt = f"""
+            SYSTEM: You are a Grounded Academic Editor. 
+            EVIDENCE: {context_for_ai}
+            
+            TASK:
+            1. Create a Table: [Original Claim] | [Actual Quote from Source] | [Correction].
+            2. Rewrite the text. You must ONLY use facts found in the 'QUOTE' section of the EVIDENCE. 
+            3. If the Quote does not support the Claim, delete the Claim.
+            """
+            # ... (Rest of chat completion call)
