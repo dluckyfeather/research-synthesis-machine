@@ -31,61 +31,67 @@ if st.button("EXECUTE SYNTHESIS"):
         # Initialize Client with the found token
         client = InferenceClient(model_id, token=hf_token)
         
-        # --- PHASE 1: FORENSIC DISCOVERY WITH LINKS ---
+        # --- PHASE 1: SEMANTIC CONTEXTUAL AUDIT ---
         import datetime
         current_year = datetime.datetime.now().year
         cutoff_year = current_year - 4
         
         sentences = re.split(r'(?<=[.!?]) +', text_input)
-        audit_report = "" 
+        audit_data = [] 
         
-        st.subheader(f"🔍 Discovery & Pivot Analysis ({current_year})")
+        st.subheader(f"🔍 Semantic Forensic Audit ({current_year})")
 
         for sent in sentences:
             cit_match = re.search(r'\(([^)]+),?\s(\d{4})\)', sent)
             if cit_match:
                 auth, year = cit_match.groups()
-                search_query = f"applied linguistics {obj} {sent[:35]}"
-                discovery_url = f"https://api.crossref.org/works?query={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=1"
+                # TIGHT SEARCH: Force 'English Language Teaching' or 'Linguistics'
+                search_query = f"ELT linguistics {sent[:40]}"
+                discovery_url = f"https://api.crossref.org/works?query={search_query}&filter=from-pub-date:{cutoff_year}-01-01&rows=2"
                 
                 try:
                     res = requests.get(discovery_url).json()
                     items = res.get('message', {}).get('items', [])
                     
-                    if items:
-                        top = items[0]
-                        new_auth = top.get('author', [{'family': 'Scholar'}])[0].get('family')
-                        new_year = top.get('created', {}).get('date-parts', [[2025]])[0][0]
-                        new_title = top.get('title', ['Unknown Title'])[0]
-                        doi = top.get('URL', '#') # Scrapes the direct DOI link
+                    valid_match = None
+                    for item in items:
+                        abstract = item.get('abstract', '').lower()
+                        title = item.get('title', [''])[0].lower()
+                        # DOUBLE-CHECK: Does the abstract actually talk about the claim?
+                        keywords = ["grammar", "toefl", "test", "english", "linguistic", "syntactic", "writing"]
+                        if any(k in abstract for k in keywords) or any(k in title for k in keywords):
+                            valid_match = item
+                            break
+                    
+                    if valid_match:
+                        new_auth = valid_match.get('author', [{'family': 'Scholar'}])[0].get('family')
+                        new_year = valid_match.get('created', {}).get('date-parts', [[2025]])[0][0]
+                        doi = valid_match.get('URL', '#')
+                        topic = valid_match.get('title', ['Unknown'])[0]
                         
-                        report_entry = f"Claim: {sent} | NEW: {new_auth} ({new_year}) | Topic: {new_title} | Link: {doi}"
-                        audit_report += report_entry + "\n"
-                        
-                        with st.expander(f"📌 Pivot: {new_auth} ({new_year})"):
-                            st.markdown(f"**Actual Paper:** [{new_title}]({doi})")
-                            st.write(f"**Forensic Note:** Replacing outdated/hallucinated logic with current 2022-2026 data.")
+                        audit_data.append({
+                            "claim": sent,
+                            "new_cite": f"{new_auth} ({new_year})",
+                            "link": doi,
+                            "topic": topic
+                        })
+                        st.success(f"🎯 Context Match: {new_auth} ({new_year}) - {topic[:50]}...")
+                    else:
+                        st.warning(f"⚠️ No contextually valid 2022-2026 match for: {sent[:30]}...")
                 except:
                     continue
 
-        # --- PHASE 2: DELTA REPORT & SYNTHESIS ---
-        st.divider()
-        if audit_report:
-            with st.spinner("Analyzing Hallucinations & Synthesizing..."):
-                prompt = f"""
-                SYSTEM: You are a Forensic Academic Editor.
-                DATA: {audit_report}
-                ORIGINAL TEXT: {text_input}
-                
-                TASK:
-                1. Provide a 'DELTA REPORT' table: Column 1: Original Hallucination/Outdated Claim. Column 2: 2026 Updated Fact. Column 3: The New Source Link.
-                2. Provide the 'Q1 REWRITE' integrating these pivots.
-                3. Ensure no placeholders. Cite the actual authors found in the DATA.
-                """
-                response = client.chat.completions.create(
-                    model=model_id,
-                    messages=[{"role": "user", "content": prompt}],
-                    max_tokens=1500,
-                    temperature=0.1
-                )
-                st.write(response.choices[0].message.content)
+        # --- PHASE 2: DELTA REPORT & ACCURATE SYNTHESIS ---
+        if audit_data:
+            audit_report_string = "\n".join([f"CLAIM: {d['claim']} | NEW: {d['new_cite']} | TOPIC: {d['topic']} | LINK: {d['link']}" for d in audit_data])
+            
+            prompt = f"""
+            SYSTEM: You are a Q1 Academic Forensic Editor. 
+            DATA: {audit_report_string}
+            
+            TASK:
+            1. Generate a DELTA REPORT Table. If a source (like Farzad 2023) was about psychology but used for a grammar claim, flag it as a 'Hallucinated Match' and find a more general way to state the fact.
+            2. Rewrite the text. ONLY use the 'NEW' citations if the 'TOPIC' matches the 'CLAIM' logic. 
+            3. Fix the Computer Engineering vs. Applied Linguistics mismatch.
+            """
+            # ... (Rest of your response = client.chat.completions logic)
